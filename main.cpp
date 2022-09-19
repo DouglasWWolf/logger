@@ -38,7 +38,8 @@ protected:
 void fetch_specs();
 void dump_log_data();
 void show_help();
-struct
+
+struct conf_t
 {
     map<int,string> port_map;
     int             server_port;

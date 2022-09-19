@@ -1,10 +1,6 @@
-#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# The top part of this file contains all the application-specific config
-# settings.  Everything beyond that is generic and will be the same for
-# every application you use this makefile template for.
-#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#=============================================================================
+# This is a simple cross-platform makefile to build executables
+#=============================================================================
 
 #-----------------------------------------------------------------------------
 # This is the base name of the executable file
@@ -14,7 +10,7 @@ EXE = logger
 
 #-----------------------------------------------------------------------------
 # This is a list of directories that have compilable code in them.  If there
-# are no subdirectories, this line is SUBDIRS = .
+# are no subdirectories, this line is must SUBDIRS = .
 #-----------------------------------------------------------------------------
 SUBDIRS = . 
 
@@ -41,13 +37,13 @@ CXXFLAGS =	\
 -D_GNU_SOURCE \
 -Wno-sign-compare \
 -Wno-unused-value \
--Icpp03_framework 
-
+-Icpp03_framework
 
 #-----------------------------------------------------------------------------
 # Link options
 #-----------------------------------------------------------------------------
-LINK_FLAGS = -Lcpp03_framework -lcpp03_framework_x86 -pthread -lm -lrt
+ARM_LINK_FLAGS = -Lcpp03_framework -pthread -lm -lrt -lcpp03_framework_arm
+X86_LINK_FLAGS = -Lcpp03_framework -pthread -lm -lrt -lcpp03_framework_x86
 
 
 #-----------------------------------------------------------------------------
@@ -140,7 +136,7 @@ $(ARM_OBJ_DIR)/%.o : %.c
 # This rule builds the x86 executable from the object files
 #-----------------------------------------------------------------------------
 $(EXE).x86 : $(X86_OBJS)
-	$(X86_CXX) -m$(X86_TYPE) -o $@ $(X86_OBJS) $(LINK_FLAGS)
+	$(X86_CXX) -m$(X86_TYPE) -o $@ $(X86_OBJS) $(X86_LINK_FLAGS)
 	$(X86_STRIP) $(EXE).x86
 
 
@@ -148,7 +144,7 @@ $(EXE).x86 : $(X86_OBJS)
 # This rule builds the ARM executable from the object files
 #-----------------------------------------------------------------------------
 $(EXE).arm : $(ARM_OBJS)
-	$(ARM_CXX) $(LINK_FLAGS) $(ARMFLAGS) -o $@ $(ARM_OBJS) 
+	$(ARM_CXX) $(ARMFLAGS) -o $@ $(ARM_OBJS) $(ARM_LINK_FLAGS)
 	$(ARM_STRIP) $(EXE).arm
 
 
