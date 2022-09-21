@@ -361,7 +361,7 @@ again:
     m_mutex.unlock();
 
     // Create the server and wait for a connection
-    if (!m_server.create_server(m_port, "", AF_INET6))
+    if (!m_server.create_server(m_port, "", AF_INET))
     {
         fprintf(stderr, "can't create server on TCP port %i\n", m_port);
         exit(1);
