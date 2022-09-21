@@ -7,6 +7,7 @@
 #include <string.h>
 #include <string>
 #include <vector>
+#include <signal.h>
 #include "config_file.h"
 #include "cmd_line.h"
 #include "cthread.h"
@@ -35,9 +36,34 @@ protected:
 //==========================================================================================================
 
 
+//==========================================================================================================
+// CLiveLog - A thread that outputs logging messages in real time
+//==========================================================================================================
+class CLiveLog : public CThread
+{
+public:
+
+    // Called by another thread to spawn this server
+    void    spawn(int port);
+
+    // Called by other threads to write messages to the live-log
+    void    send(int port, const char* message);
+
+protected:
+
+    void    main();
+    int     m_port;
+    bool    m_has_client;
+    CMutex  m_mutex;
+    NetSock m_server;
+};
+//==========================================================================================================
+
+
 void fetch_specs();
 void dump_log_data();
 void show_help();
+int  get_longest_tag();
 
 struct conf_t
 {
@@ -49,13 +75,14 @@ struct conf_t
 } conf;
 
 CLogData    DataLog;
+CLiveLog    LiveLog;
 NetSock     Server;
 CCmdLine    CmdLine;
 CMgmtServer Manager;
+int         longest_tag;
 
 // This is the name of the configuration file
 string   config_file = "logger.conf";
-
 
 //==========================================================================================================
 // main() - Execution starts here
@@ -65,6 +92,9 @@ int main(int argc, char** argv)
     string s;
     int mport;
     map<int, string>::iterator it;
+
+    // Ignore SIGPIPE so that writes to closed sockets don't crash us
+    signal(SIGPIPE, SIG_IGN);
 
     // Declare the valid command-line switches
     CmdLine.declare_switch("-config",  CLP_REQUIRED);
@@ -83,8 +113,14 @@ int main(int argc, char** argv)
     // Fetch the configuration specs
     fetch_specs();
 
+    // Determine the length of the longest tag-name
+    longest_tag = get_longest_tag();
+
     // Tell the data-log the maximum number of entries it should keep
     DataLog.set_max_entries(conf.max_entries);
+
+    // Spin up the live-log thread
+    LiveLog.spawn(conf.server_port+1);
 
     // Loop through each port we need to launch a listener on
     for (it = conf.port_map.begin(); it != conf.port_map.end(); ++it)
@@ -219,9 +255,6 @@ void dump_log_data()
     char line[1024];
     struct tm tm;
 
-    // Find out how long the longest tag is
-    int longest_tag = get_longest_tag();
-
     // Get a reference to the log data
     deque<log_data_t>& log_data = DataLog.get_data();
     
@@ -282,6 +315,7 @@ void Listener::main()
         exit(1);
     }
 
+
     // Every time a message is received...
     while (udp.receive(message, sizeof message)) 
     {
@@ -291,6 +325,96 @@ void Listener::main()
         
         // Stuff the message into our queue
         DataLog.append(m_port, message);
+        
+        // And send the message to the live-log TCP port
+        LiveLog.send(m_port, message);
     }
 }
 //==========================================================================================================
+
+
+
+//==========================================================================================================
+// spawn() - Spawns the thread
+//==========================================================================================================
+void CLiveLog::spawn(int port)
+{
+    m_has_client = false;
+    m_port = port;
+    CThread::spawn();
+}
+//==========================================================================================================
+
+
+//==========================================================================================================
+// main() - Manages the TCP port
+//==========================================================================================================
+void CLiveLog::main()
+{
+    char    c;
+
+again:
+
+    // We do not currently have a client connected
+    m_mutex.lock();
+    m_has_client = false;
+    m_mutex.unlock();
+
+    // Create the server and wait for a connection
+    if (!m_server.create_server(m_port, "", AF_INET6))
+    {
+        fprintf(stderr, "can't create server on TCP port %i\n", m_port);
+        exit(1);
+    }
+
+    // Wait for someone to connect to us
+    m_server.listen_and_accept();
+
+    // Send a message so that the client knows there is someone here
+    m_server.send("Connected to live-log\n");
+
+    // We have a client connected
+    m_mutex.lock();
+    m_has_client = true;
+    m_mutex.unlock();
+
+    // If the client closes the socket, start over
+    while (true) if (m_server.receive(&c, 1) < 1) goto again;
+}
+//==========================================================================================================
+
+
+
+//==========================================================================================================
+// send() - Sends data to the live-log output stream
+//==========================================================================================================
+void CLiveLog::send(int port, const char* message)
+{
+    struct tm tm;
+    time_t timestamp;
+    char   line[1024];
+
+    // Ensure thread-synchronized access to both "m_has_client" and "m_server"
+    UniqueLock lock(m_mutex);
+
+    // If there's no client connected, do nothing
+    if (!m_has_client) return;
+
+    // Fetch the current timestamp
+    timestamp = time(NULL);
+
+    // Look up the tag that corresponds to the UDP port that recevied the message
+    const char* tag = conf.port_map[port].c_str();
+
+    // Break the timestamp out into components
+    localtime_r(&timestamp, &tm);
+
+    // Format the time, tag, and data
+    sprintf(line, "%02d:%02d:%02d (%-*s): %s\n", tm.tm_hour, tm.tm_min, tm.tm_sec, 
+                       longest_tag, tag, message);
+
+    // And send this line to the client
+    m_server.send(line, strlen(line));
+}
+//==========================================================================================================
+
