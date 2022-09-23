@@ -61,7 +61,7 @@ protected:
 
 
 void fetch_specs();
-void dump_log_data();
+void dump_log_data(NetSock& server);
 void show_help();
 int  get_longest_tag();
 
@@ -154,16 +154,11 @@ int main(int argc, char** argv)
         // Wait for someone to connect to our TCP server
         Server.listen_and_accept();
 
-        // Lock the datalog so we can read the whole thing
-        DataLog.lock();
-
         // Send all of the log data to the connected client
-        dump_log_data();
+        dump_log_data(Server);
 
-        // Allow other threads to access the log
-        DataLog.unlock();
-
-        // And close the server to indicate we've output the entire log
+        // We're done.  Send an End-of-File message and close the port.
+        Server.send("EOF\n");
         Server.close();
     }
 }
@@ -246,43 +241,67 @@ int get_longest_tag()
 //==========================================================================================================
 
 
+
+//==========================================================================================================
+// transmit_log_entry() - Formats a log entry and writes it to the specified server
+//
+// Passed:   entry  = timestamp, port, and message to be logged
+//           server = A reference to the NetSock where the formatted message should be written
+//
+// Returns:  true if the message was succesfully written, false if the server port was closed
+//==========================================================================================================
+bool transmit_log_entry(log_data_t& entry, NetSock& server)
+{
+    char line[1024];
+    struct tm tm;
+
+    // Handy one-letter references to the "struct tm" fields we care about
+    int& h = tm.tm_hour;
+    int& m = tm.tm_min;
+    int& s = tm.tm_sec;
+
+    // Look up the tag that corresponds to the UDP port that recevied the message
+    const char* tag = conf.port_map[entry.port].c_str();
+
+    // Get a const char* to the line of data
+    const char* message = entry.data.c_str();
+
+    // Break the timestamp out into components
+    localtime_r(&entry.timestamp, &tm);
+
+    // Format the time, tag, and data
+    sprintf(line, "%02d:%02d:%02d (%-*s): %s\n", h, m, s, longest_tag, tag, message);
+
+    // And send this line to the client
+    int bytes_sent = server.send(line, strlen(line));
+
+    // Tell the caller whether or not this worked
+    return (bytes_sent > 0);
+}
+//==========================================================================================================
+
+
 //==========================================================================================================
 // dump_log_data() - Sends the entire log to the client connected to the server
 //==========================================================================================================
-void dump_log_data()
+void dump_log_data(NetSock& server)
 {
     deque<log_data_t>::iterator it;
-    char line[1024];
-    struct tm tm;
+
+    // Prevent other threads from altering the deque
+    DataLog.lock();
 
     // Get a reference to the log data
     deque<log_data_t>& log_data = DataLog.get_data();
     
-    // Loop through every item of log data
+    // Loop through every item of log data, and transmit it.
     for (it = log_data.begin(); it != log_data.end(); ++it)
     {
-        // Get a convenient reference to this entry
-        log_data_t& entry = *it;
-
-        // Look up the tag that corresponds to the UDP port that recevied the message
-        const char* tag = conf.port_map[entry.port].c_str();
-
-        // Get a const char* to the line of data
-        const char* data = entry.data.c_str();
-
-        // Break the timestamp out into components
-        localtime_r(&entry.timestamp, &tm);
-
-        // Format the time, tag, and data
-        sprintf(line, "%02d:%02d:%02d (%-*s): %s\n", tm.tm_hour, tm.tm_min, tm.tm_sec, 
-                       longest_tag, tag, data);
-
-        // And send this line to the client
-        Server.send(line, strlen(line));
+        transmit_log_entry(*it, server);
     }
 
-    // Send the "End of file" marker
-    Server.send("EOF\n");
+    // Allow other threads to have access to the deque
+    DataLog.unlock();
 }
 //==========================================================================================================
 
@@ -370,13 +389,13 @@ again:
     // Wait for someone to connect to us
     m_server.listen_and_accept();
 
-    // Send a message so that the client knows there is someone here
-    m_server.send("Connected to live-log\n");
-
     // We have a client connected
     m_mutex.lock();
     m_has_client = true;
     m_mutex.unlock();
+
+    // Send a message so that the client knows there is someone here
+    dump_log_data(m_server);
 
     // If the client closes the socket, start over
     while (true) if (m_server.receive(&c, 1) < 1) goto again;
@@ -390,31 +409,17 @@ again:
 //==========================================================================================================
 void CLiveLog::send(int port, const char* message)
 {
-    struct tm tm;
-    time_t timestamp;
-    char   line[1024];
-
     // Ensure thread-synchronized access to both "m_has_client" and "m_server"
     UniqueLock lock(m_mutex);
 
     // If there's no client connected, do nothing
     if (!m_has_client) return;
 
-    // Fetch the current timestamp
-    timestamp = time(NULL);
+    // Turn the data that describes our message into a log_data_t
+    log_data_t entry = {time(NULL), port, message};
 
-    // Look up the tag that corresponds to the UDP port that recevied the message
-    const char* tag = conf.port_map[port].c_str();
-
-    // Break the timestamp out into components
-    localtime_r(&timestamp, &tm);
-
-    // Format the time, tag, and data
-    sprintf(line, "%02d:%02d:%02d (%-*s): %s\n", tm.tm_hour, tm.tm_min, tm.tm_sec, 
-                       longest_tag, tag, message);
-
-    // And send this line to the client
-    m_server.send(line, strlen(line));
+    // Transmit the formatted message via the our TCP server
+    transmit_log_entry(entry, m_server);
 }
 //==========================================================================================================
 
