@@ -22,7 +22,7 @@ using namespace std;
 //==========================================================================================================
 // Listener() - A thread that listens for incoming UDP messages to be logged
 //==========================================================================================================
-class Listener : public CThread
+class CListener : public CThread
 {
 public:
     void    spawn(int port);
@@ -47,7 +47,7 @@ public:
     void    spawn(int port);
 
     // Called by other threads to write messages to the live-log
-    void    send(int port, const char* message);
+    void    send(const char* tag, const char* message);
 
 protected:
 
@@ -63,15 +63,16 @@ protected:
 void fetch_specs();
 void dump_log_data(NetSock& server);
 void show_help();
-int  get_longest_tag();
 
 struct conf_t
 {
-    map<int,string> port_map;
+    int             log_port;
     int             server_port;
+    int             live_log_port;
+    int             max_entries;
+    int             id_length;
     bool            use_section;
     string          section;
-    int             max_entries;
 } conf;
 
 CLogData    DataLog;
@@ -79,7 +80,7 @@ CLiveLog    LiveLog;
 NetSock     Server;
 CCmdLine    CmdLine;
 CMgmtServer Manager;
-int         longest_tag;
+CListener   Listener;
 
 // This is the name of the configuration file
 string   config_file = "logger.conf";
@@ -113,27 +114,14 @@ int main(int argc, char** argv)
     // Fetch the configuration specs
     fetch_specs();
 
-    // Determine the length of the longest tag-name
-    longest_tag = get_longest_tag();
-
     // Tell the data-log the maximum number of entries it should keep
     DataLog.set_max_entries(conf.max_entries);
 
+    // Spin up the thread that listens for incoming log messages
+    Listener.spawn(conf.log_port);
+
     // Spin up the live-log thread
-    LiveLog.spawn(conf.server_port+1);
-
-    // Loop through each port we need to launch a listener on
-    for (it = conf.port_map.begin(); it != conf.port_map.end(); ++it)
-    {
-        // Fetch the UDP port number
-        int port = it->first;
-
-        // Create a new thread object
-        Listener *p_thread = new Listener();
-
-        // And spawn it, telling it what port to listen on
-        p_thread->spawn(port);
-    }
+    LiveLog.spawn(conf.live_log_port);
 
     // If there was an "-mport" switch on the command line, spawn the process manager
     if (CmdLine.has_switch("-mport", &mport)) Manager.spawn(&mport);
@@ -176,7 +164,6 @@ int main(int argc, char** argv)
 void fetch_specs()
 {
     CConfigFile cf;
-    CConfigScript cs;
 
     // Open the config file and bail if we can't
     if (!cf.read(config_file)) exit(1);
@@ -186,24 +173,17 @@ void fetch_specs()
 
     try
     {
-        // Fetch the list of ports we're going to create servers on
-        cf.get("ports",       &cs);
-        cf.get("server_port", &conf.server_port);
-        cf.get("max_entries", &conf.max_entries);
+        cf.get("server_port",   &conf.server_port);
+        cf.get("live_log_port", &conf.live_log_port);
+        cf.get("max_entries",   &conf.max_entries);
+        cf.get("log_port",      &conf.log_port);
+        cf.get("id_length",     &conf.id_length);
+
     }
     catch(const std::exception& e)
     {
         fprintf(stderr, "%s\n", e.what());
         exit(1);
-    }
-
-
-    // Build the dictionary that maps port number to tag string
-    while (cs.get_next_line())
-    {
-        string tag  = cs.get_next_token();
-        int    port = cs.get_next_int();
-        conf.port_map[port] = tag;
     }
 }
 //==========================================================================================================
@@ -221,24 +201,6 @@ void show_help()
 }
 //==========================================================================================================
 
-
-//==========================================================================================================
-// get_longest_tag() - Returns the length of the longest tag in the port_map
-//==========================================================================================================
-int get_longest_tag()
-{
-    int longest = -1;
-    map<int,string>::iterator it;
-
-    for (it = conf.port_map.begin(); it != conf.port_map.end(); ++it)
-    {
-        int tag_length = it->second.length();
-        if (tag_length > longest) longest = tag_length;
-    }
-
-    return longest;
-}
-//==========================================================================================================
 
 
 
@@ -261,7 +223,7 @@ bool transmit_log_entry(log_data_t& entry, NetSock& server)
     int& s = tm.tm_sec;
 
     // Look up the tag that corresponds to the UDP port that recevied the message
-    const char* tag = conf.port_map[entry.port].c_str();
+    const char* tag = entry.tag.c_str();
 
     // Get a const char* to the line of data
     const char* message = entry.data.c_str();
@@ -270,7 +232,7 @@ bool transmit_log_entry(log_data_t& entry, NetSock& server)
     localtime_r(&entry.timestamp, &tm);
 
     // Format the time, tag, and data
-    sprintf(line, "%02d:%02d:%02d (%-*s): %s\n", h, m, s, longest_tag, tag, message);
+    sprintf(line, "%02d:%02d:%02d (%-*s): %s\n", h, m, s, conf.id_length, tag, message);
 
     // And send this line to the client
     int bytes_sent = server.send(line, strlen(line));
@@ -311,7 +273,7 @@ void dump_log_data(NetSock& server)
 //==========================================================================================================
 // spawn() - Spawns the thread
 //==========================================================================================================
-void Listener::spawn(int port)
+void CListener::spawn(int port)
 {
     m_port = port;
     CThread::spawn();
@@ -322,10 +284,11 @@ void Listener::spawn(int port)
 //==========================================================================================================
 // main() - This thread listens for incoming UPD messages and logs them
 //==========================================================================================================
-void Listener::main()
+void CListener::main()
 {
     UDPSock udp;
-    char    message[1024], *p;
+    char    buffer[1024], *p;
+    const char  *pmsg, *ptag;
 
     // Create the server port
     if (!udp.create_server(m_port, "", AF_INET))
@@ -336,17 +299,36 @@ void Listener::main()
 
 
     // Every time a message is received...
-    while (udp.receive(message, sizeof message)) 
+    while (udp.receive(buffer, sizeof buffer)) 
     {
         // Chomp any carriage return or linefeed at the end of the message
-        p = strchr(message, 10); if (p) *p = 0;
-        p = strchr(message, 13); if (p) *p = 0;
+        p = strchr(buffer, 10); if (p) *p = 0;
+        p = strchr(buffer, 13); if (p) *p = 0;
         
+        // Does the message contain the '$' delimeter that divides the tag from the message?
+        p = strchr(buffer, '$');
+
+        // If that delimieter exists, divide the buffer into a tag and a message
+        if (p)
+        {
+            *p = 0;
+            pmsg = p+1;
+            ptag = buffer;
+        }
+
+        // Otherwise, the entire buffer is the message and the tag is an empty string
+        else
+        {
+            pmsg = buffer;
+            ptag = "";            
+        }
+
+
         // Stuff the message into our queue
-        DataLog.append(m_port, message);
+        DataLog.append(ptag, pmsg);
         
         // And send the message to the live-log TCP port
-        LiveLog.send(m_port, message);
+        LiveLog.send(ptag, pmsg);
     }
 }
 //==========================================================================================================
@@ -407,7 +389,7 @@ again:
 //==========================================================================================================
 // send() - Sends data to the live-log output stream
 //==========================================================================================================
-void CLiveLog::send(int port, const char* message)
+void CLiveLog::send(const char* tag, const char* message)
 {
     // Ensure thread-synchronized access to both "m_has_client" and "m_server"
     UniqueLock lock(m_mutex);
@@ -416,7 +398,7 @@ void CLiveLog::send(int port, const char* message)
     if (!m_has_client) return;
 
     // Turn the data that describes our message into a log_data_t
-    log_data_t entry = {time(NULL), port, message};
+    log_data_t entry = {time(NULL), tag, message};
 
     // Transmit the formatted message via the our TCP server
     transmit_log_entry(entry, m_server);

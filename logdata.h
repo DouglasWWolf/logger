@@ -13,7 +13,7 @@ using namespace std;
 struct log_data_t
 {
     time_t  timestamp;
-    int     port;
+    string  tag;
     string  data;
 };
 
@@ -30,7 +30,7 @@ public:
     void    set_max_entries(int count) {m_max_entries = count;}
 
     // Append a data item to the queue
-    void    append(int port, const string& data);
+    void    append(const string& tag, const string& data);
 
     // Prevent other threads from accessing m_data
     void    lock() {m_mutex.lock();}

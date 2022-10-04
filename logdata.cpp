@@ -8,10 +8,10 @@
 //==========================================================================================================
 // append() - Appends an entry to the queue of logged data
 //==========================================================================================================
-void CLogData::append(int port, const string& data)
+void CLogData::append(const string& tag,  const string& data)
 {
     // Build a queue entry from our input data
-    struct log_data_t entry = {time(NULL), port, data};
+    struct log_data_t entry = {time(NULL), tag, data};
 
     // Ensure thread-safe access to m_data
     lock();

@@ -1,0 +1,3 @@
+Manifest for distro version blah blah blah
+----------------------------------
+logger.x86 ................... 1000

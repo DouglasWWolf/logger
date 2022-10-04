@@ -1,0 +1,48 @@
+#!/bin/sh
+
+#
+# If a function sends a TERM signal, exit the script
+#
+trap "exit 1" TERM
+
+
+#-----------------------------------------------------------------
+# function version() 
+#   Passed: a filename
+#   Returns: the version number of that file
+#-----------------------------------------------------------------
+version ()
+{
+    
+    # If the file doesn't exist, terminate the script
+    if [ ! -f "$1" ]; then
+        echo "Cant find file: $1" >&2
+        kill -s TERM $$
+        exit
+    fi
+
+    # Find the token that contains the special version tag
+    token=$(strings $1 | grep '\$\$\$>>>EXE_VERSION:')
+
+    # If the token doesn't exist, then the result is "unknown"
+    if [ -z "$token" ]; then
+        echo "unknown"
+        exit
+    fi
+
+    # Split the token an array at the ':' delimeter
+    readarray -d: -t word <<< ${token}
+
+    # And echo the part after the colon
+    echo ${word[1]}
+}
+#-----------------------------------------------------------------
+
+of=manifest.txt
+
+echo "Manifest for distro version blah blah blah" >$of
+echo "----------------------------------" >>$of
+
+echo "logger.x86 ................... $(version logger.x86)" >>$of
+
+cat $of
